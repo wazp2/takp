@@ -66,12 +66,29 @@ function validatePayload(array $obj): array {
     ];
 }
 
+function getConfigValue(string $key, array $envFile, string $default = ''): string {
+    $val = getenv($key);
+    if (is_string($val) && $val !== '') {
+        return $val;
+    }
+    if (isset($_ENV[$key]) && is_string($_ENV[$key]) && $_ENV[$key] !== '') {
+        return (string)$_ENV[$key];
+    }
+    if (isset($_SERVER[$key]) && is_string($_SERVER[$key]) && $_SERVER[$key] !== '') {
+        return (string)$_SERVER[$key];
+    }
+    if (isset($envFile[$key]) && is_string($envFile[$key]) && $envFile[$key] !== '') {
+        return (string)$envFile[$key];
+    }
+    return $default;
+}
+
 $env = loadEnvFile(__DIR__ . DIRECTORY_SEPARATOR . '.env');
-$apiKey = (string)($env['DEEPSEEK_API_KEY'] ?? '');
-$model = (string)($env['DEEPSEEK_MODEL'] ?? 'deepseek-chat');
+$apiKey = getConfigValue('DEEPSEEK_API_KEY', $env, '');
+$model = getConfigValue('DEEPSEEK_MODEL', $env, 'deepseek-chat');
 
 if ($apiKey === '') {
-    respondDs(500, ['ok' => false, 'error' => 'DEEPSEEK_API_KEY bulunamadi (.env).']);
+    respondDs(500, ['ok' => false, 'error' => 'DEEPSEEK_API_KEY bulunamadi (Render env veya .env).']);
 }
 
 $input = readJsonInputDs();
