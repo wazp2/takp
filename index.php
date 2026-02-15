@@ -6,6 +6,10 @@ $basePath = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
 if ($basePath === '/' || $basePath === '.') {
   $basePath = '';
 }
+$cssPath = __DIR__ . '/assets/style.css';
+$jsPath = __DIR__ . '/assets/app.js';
+$inlineCss = is_file($cssPath) ? (string)file_get_contents($cssPath) : '';
+$inlineJs = is_file($jsPath) ? (string)file_get_contents($jsPath) : '';
 ?>
 <!doctype html>
 <html lang="tr">
@@ -13,7 +17,10 @@ if ($basePath === '/' || $basePath === '.') {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sirket Haber Takip</title>
-  <link rel="stylesheet" href="<?= htmlspecialchars($basePath . '/assets/style.css', ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="icon" type="image/png" href="<?= htmlspecialchars($basePath . '/icons/websiteicon.png', ENT_QUOTES, 'UTF-8') ?>">
+  <?php if ($inlineCss !== ''): ?>
+  <style><?= $inlineCss ?></style>
+  <?php endif; ?>
 </head>
 <body>
   <main class="container">
@@ -139,6 +146,8 @@ if ($basePath === '/' || $basePath === '.') {
     </div>
   </main>
 
-  <script src="<?= htmlspecialchars($basePath . '/assets/app.js', ENT_QUOTES, 'UTF-8') ?>"></script>
+  <?php if ($inlineJs !== ''): ?>
+  <script><?= $inlineJs ?></script>
+  <?php endif; ?>
 </body>
 </html>
