@@ -1,5 +1,11 @@
 <?php
 declare(strict_types=1);
+
+$scriptName = (string)($_SERVER['SCRIPT_NAME'] ?? '/');
+$basePath = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
+if ($basePath === '/' || $basePath === '.') {
+  $basePath = '';
+}
 ?>
 <!doctype html>
 <html lang="tr">
@@ -7,7 +13,7 @@ declare(strict_types=1);
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sirket Haber Takip</title>
-  <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="<?= htmlspecialchars($basePath . '/assets/style.css', ENT_QUOTES, 'UTF-8') ?>">
 </head>
 <body>
   <main class="container">
@@ -133,6 +139,6 @@ declare(strict_types=1);
     </div>
   </main>
 
-  <script src="assets/app.js"></script>
+  <script src="<?= htmlspecialchars($basePath . '/assets/app.js', ENT_QUOTES, 'UTF-8') ?>"></script>
 </body>
 </html>
