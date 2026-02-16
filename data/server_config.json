@@ -1,0 +1,38 @@
+{
+    "keywords": "trgyo\nSNGYO\nenka\nCLEBI\nkchol",
+    "lang": "tr",
+    "country": "TR",
+    "interval": 120,
+    "kapDateRange": 0,
+    "kapJobs": [
+        {
+            "id": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a1413b7ef5014144f83882011f|2|5|0",
+            "url": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a1413b7ef5014144f83882011f",
+            "minMinutes": 2,
+            "maxMinutes": 5,
+            "range": 30
+        },
+        {
+            "id": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a140ee84900140f1f1584c0015|5|7|0",
+            "url": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a140ee84900140f1f1584c0015",
+            "minMinutes": 5,
+            "maxMinutes": 7,
+            "range": 30
+        },
+        {
+            "id": "https://www.kap.org.tr/tr/sirket-bilgileri/ozet/4028e4a240e95dc90140ed3883fe0093|5|8|0",
+            "url": "https://www.kap.org.tr/tr/sirket-bilgileri/ozet/4028e4a240e95dc90140ed3883fe0093",
+            "minMinutes": 5,
+            "maxMinutes": 8,
+            "range": 30
+        },
+        {
+            "id": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a140f2ed710140f2f4d6c70039|5|8|0",
+            "url": "https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a140f2ed710140f2f4d6c70039",
+            "minMinutes": 5,
+            "maxMinutes": 8,
+            "range": 30
+        }
+    ],
+    "updatedAt": 1771223100
+}

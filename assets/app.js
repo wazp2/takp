@@ -70,6 +70,8 @@ let kapJobState = {};
 let kapJobs = [];
 let kapActiveTab = "unread";
 let kapLogs = [];
+let serverConfigSyncTimer = null;
+const ALWAYS_ON_MODE = true;
 
 function formatDateTime(ts) {
   if (!ts) return "-";
@@ -119,6 +121,46 @@ function saveConfig() {
     kapDateRange: el.kapDateRange ? Number(el.kapDateRange.value || 365) : 365,
   };
   localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(cfg));
+  queueServerConfigSync();
+}
+
+function getCurrentConfigPayload() {
+  return {
+    keywords: el.keywords.value.trim(),
+    interval: Number(el.interval.value || 120),
+    lang: (el.lang.value || "tr").trim(),
+    country: (el.country.value || "TR").trim(),
+    kapJobs: kapJobs.map((j) => ({
+      id: String(j.id || ""),
+      url: String(j.url || ""),
+      minMinutes: Number(j.minMinutes || 2),
+      maxMinutes: Number(j.maxMinutes || 5),
+      range: Number(j.range || 30),
+    })),
+    kapDateRange: el.kapDateRange ? Number(el.kapDateRange.value || 30) : 30,
+  };
+}
+
+async function syncServerConfigNow() {
+  try {
+    await fetch("server_config.php", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(getCurrentConfigPayload()),
+    });
+  } catch (_) {
+    // background sync best-effort
+  }
+}
+
+function queueServerConfigSync() {
+  if (serverConfigSyncTimer) {
+    clearTimeout(serverConfigSyncTimer);
+  }
+  serverConfigSyncTimer = setTimeout(() => {
+    serverConfigSyncTimer = null;
+    syncServerConfigNow();
+  }, 500);
 }
 
 function getSet(key) {
@@ -196,6 +238,27 @@ function appendAiLog(entry) {
   renderAiLogs();
 }
 
+function mergeAiLogs(incoming) {
+  if (!Array.isArray(incoming) || incoming.length === 0) return;
+  const normalized = incoming.map((row) => ({
+    ts: Number((row.ts || 0)) * 1000 || Date.now(),
+    level: String(row.level || "INFO").toUpperCase(),
+    keyword: row.keyword ? String(row.keyword) : "-",
+    title: row.title ? String(row.title) : "Server Tick",
+    notification_level: row.notification_level ? String(row.notification_level) : "",
+    summary: row.summary ? String(row.summary) : "",
+    message: row.message ? String(row.message) : "",
+  }));
+  const uniq = new Map();
+  for (const row of [...normalized, ...aiLogs]) {
+    const key = `${row.ts}|${row.level}|${row.title}|${row.message}`;
+    if (!uniq.has(key)) uniq.set(key, row);
+  }
+  aiLogs = Array.from(uniq.values()).sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 500);
+  saveAiLogs();
+  renderAiLogs();
+}
+
 function loadKapJobState() {
   const raw = localStorage.getItem(STORAGE_KEYS.kapJobState);
   if (!raw) return {};
@@ -255,6 +318,21 @@ function saveFeedCache(items) {
   );
 }
 
+function mergeLatestItems(incoming) {
+  if (!Array.isArray(incoming) || incoming.length === 0) return;
+  const byId = new Map();
+  for (const item of latestItems) {
+    if (item && item.id) byId.set(item.id, item);
+  }
+  for (const item of incoming) {
+    if (item && item.id) byId.set(item.id, item);
+  }
+  latestItems = Array.from(byId.values()).sort((a, b) => (Number(b.pubTs || 0) - Number(a.pubTs || 0))).slice(0, 300);
+  saveFeedCache(latestItems);
+  renderItems(latestItems);
+  updateStatusCounts();
+}
+
 function loadRuntime() {
   const raw = localStorage.getItem(STORAGE_KEYS.runtime);
   if (!raw) return { newsRunning: false, kapRunning: false };
@@ -302,6 +380,27 @@ function appendKapLog(entry) {
   renderKapLogs();
 }
 
+function mergeKapLogs(incoming) {
+  if (!Array.isArray(incoming) || incoming.length === 0) return;
+  const normalized = incoming.map((row) => ({
+    ts: Number((row.ts || 0)) * 1000 || Date.now(),
+    level: String(row.level || "info").toLowerCase(),
+    url: String(row.url || "-"),
+    message: String(row.message || ""),
+    newCount: Number(row.newCount || 0),
+    fetchedCount: Number(row.fetchedCount || 0),
+    totalSaved: Number(row.totalSaved || kapItems.length),
+  }));
+  const uniq = new Map();
+  for (const row of [...normalized, ...kapLogs]) {
+    const key = `${row.ts}|${row.level}|${row.url}|${row.message}`;
+    if (!uniq.has(key)) uniq.set(key, row);
+  }
+  kapLogs = Array.from(uniq.values()).sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 300);
+  saveKapLogs();
+  renderKapLogs();
+}
+
 function renderKapLogs() {
   if (!el.kapLogsList) return;
   el.kapLogsList.innerHTML = "";
@@ -316,16 +415,18 @@ function renderKapLogs() {
   for (const log of kapLogs.slice(0, 120)) {
     const li = document.createElement("li");
     const levelText = log.level === "error" ? "HATA" : "OK";
+    const rawUrl = String(log.url || "-");
+    const shortUrl = rawUrl.length > 90 ? `${rawUrl.slice(0, 90)}...` : rawUrl;
     li.innerHTML = `
       <div class="meta">
         <span>${escapeHtml(formatDateTime(log.ts))}</span>
         <span>${escapeHtml(levelText)}</span>
-        <span>yeni: ${escapeHtml(String(log.newCount))}</span>
-        <span>cekilen: ${escapeHtml(String(log.fetchedCount))}</span>
-        <span>kayitli-toplam: ${escapeHtml(String(log.totalSaved))}</span>
+        <span>Yeni: ${escapeHtml(String(log.newCount))}</span>
+        <span>Cekilen: ${escapeHtml(String(log.fetchedCount))}</span>
+        <span>Toplam Kayit: ${escapeHtml(String(log.totalSaved))}</span>
       </div>
-      <div>${escapeHtml(log.url)}</div>
-      <div>${escapeHtml(log.message)}</div>
+      <div><strong>Kaynak:</strong> ${escapeHtml(shortUrl)}</div>
+      <div><strong>Detay:</strong> ${escapeHtml(log.message)}</div>
     `;
     el.kapLogsList.appendChild(li);
   }
@@ -1087,6 +1188,44 @@ async function scanAiBacklogNow() {
   );
 }
 
+async function hydrateFromBackgroundData() {
+  try {
+    const response = await fetch("background_data.php", {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+    const data = await response.json();
+    if (!data || !data.ok) return;
+
+    if (data.news && Array.isArray(data.news.items) && data.news.items.length) {
+      mergeLatestItems(data.news.items);
+    }
+    if (data.news && Array.isArray(data.news.logs) && data.news.logs.length) {
+      mergeAiLogs(data.news.logs);
+    }
+    if (data.kap && Array.isArray(data.kap.items) && data.kap.items.length) {
+      mergeKapItems(data.kap.items);
+    }
+    if (data.kap && Array.isArray(data.kap.logs) && data.kap.logs.length) {
+      mergeKapLogs(data.kap.logs);
+    }
+    if (data.kap && data.kap.jobsState && typeof data.kap.jobsState === "object") {
+      for (const [jobId, st] of Object.entries(data.kap.jobsState)) {
+        if (!st || typeof st !== "object") continue;
+        if (!kapJobState[jobId]) kapJobState[jobId] = {};
+        const lastCheckedAt = Number(st.lastCheckedAt || 0);
+        const nextRunAt = Number(st.nextRunAt || 0);
+        if (lastCheckedAt > 0) kapJobState[jobId].lastCheckedAt = lastCheckedAt * 1000;
+        if (nextRunAt > 0) kapJobState[jobId].nextRunAt = nextRunAt * 1000;
+      }
+      saveKapJobState();
+      renderKapJobs();
+    }
+  } catch (_) {
+    // ignore background data errors
+  }
+}
+
 async function fetchNews() {
   const keywords = parseKeywords();
   const interval = Number(el.interval.value || 120);
@@ -1095,6 +1234,12 @@ async function fetchNews() {
 
   if (keywords.length === 0) {
     setStatus("En az bir keyword girin.", true);
+    appendAiLog({
+      level: "WARN",
+      keyword: "-",
+      title: "Google News sorgusu atlandi",
+      message: "Keyword yok.",
+    });
     return;
   }
   if (interval < 30) {
@@ -1120,11 +1265,23 @@ async function fetchNews() {
     data = await response.json();
   } catch (err) {
     setStatus(`Istek hatasi: ${String(err)}`, true);
+    appendAiLog({
+      level: "ERROR",
+      keyword: "-",
+      title: "Google News istek hatasi",
+      message: String(err),
+    });
     return;
   }
 
   if (!data.ok) {
     setStatus(data.error || "Bilinmeyen hata", true);
+    appendAiLog({
+      level: "ERROR",
+      keyword: "-",
+      title: "Google News API hatasi",
+      message: data.error || "Bilinmeyen hata",
+    });
     return;
   }
 
@@ -1174,6 +1331,12 @@ async function fetchNews() {
 
   const errText = data.errors && data.errors.length ? ` | Uyarilar: ${data.errors.join(" ; ")}` : "";
   firstRun = false;
+  appendAiLog({
+    level: "INFO",
+    keyword: "-",
+    title: "Google News sorgu raporu",
+    message: `Sorgu yapildi (${formatDateTime(Date.now())}). Yeni: ${newCount}, Toplam: ${latestItems.length}${data.errors && data.errors.length ? `, Uyari: ${data.errors.length}` : ""}`,
+  });
   updateStatusCounts(
     `${newCount > 0 ? ` | Yeni: ${newCount}` : ""}${importantPushCount > 0 ? ` | AI Push: ${importantPushCount}` : ""}${veryImportantUnreadCount > 0 ? ` | Cok Onemli Okunmamis: ${veryImportantUnreadCount}` : ""}${errText}`
   );
@@ -1223,6 +1386,10 @@ el.startBtn.addEventListener("click", async () => {
 });
 
 el.stopBtn.addEventListener("click", () => {
+  if (ALWAYS_ON_MODE) {
+    setStatus("Surekli takip modu acik. Durdurma kapali.");
+    return;
+  }
   stopPolling();
   setStatus("Takip durduruldu.");
 });
@@ -1305,6 +1472,10 @@ if (el.kapStartBtn) {
 
 if (el.kapStopBtn) {
   el.kapStopBtn.addEventListener("click", () => {
+    if (ALWAYS_ON_MODE) {
+      setKapStatus("Surekli takip modu acik. KAP durdurma kapali.");
+      return;
+    }
     stopKapRandomTracking();
   });
 }
@@ -1380,6 +1551,7 @@ if (el.scanAiBacklogBtn) {
 }
 
 loadConfig();
+queueServerConfigSync();
 aiLogs = loadAiLogs();
 kapJobState = loadKapJobState();
 kapLogs = loadKapLogs();
@@ -1409,10 +1581,12 @@ renderKapItems(kapItems);
 renderKapLogs();
 setKapTrackingButtons();
 
+hydrateFromBackgroundData();
+
 const runtime = loadRuntime();
-if (runtime.newsRunning) {
+if (runtime.newsRunning || (ALWAYS_ON_MODE && parseKeywords().length > 0)) {
   startPolling();
 }
-if (runtime.kapRunning) {
+if (runtime.kapRunning || (ALWAYS_ON_MODE && kapJobs.length > 0)) {
   startKapRandomTracking(true);
 }
