@@ -1,0 +1,84 @@
+function renderItems(items) {
+  const readSet = getSet(STORAGE_KEYS.read);
+  const searchQuery = (el.feedSearchInput?.value || "").trim().toLowerCase();
+  const visible = getVisibleItems(items, readSet).filter((item) => {
+    if (!searchQuery) return true;
+    const haystack = `${item.title || ""} ${item.keyword || ""} ${item.link || ""}`.toLowerCase();
+    return haystack.includes(searchQuery);
+  });
+  el.newsList.innerHTML = "";
+
+  const groups = {
+    VERY_IMPORTANT: [],
+    IMPORTANT: [],
+    NOT_IMPORTANT: [],
+  };
+  for (const item of visible) {
+    const level = getNewsImportanceLevel(item);
+    groups[level].push(item);
+  }
+
+  const defs = [
+    { key: "VERY_IMPORTANT", label: "Cok Onemli", open: true },
+    { key: "IMPORTANT", label: "Onemli", open: true },
+    { key: "NOT_IMPORTANT", label: "Diger", open: false },
+  ];
+
+  let totalRendered = 0;
+  for (const def of defs) {
+    const arr = groups[def.key];
+    totalRendered += arr.length;
+    const section = document.createElement("section");
+    section.className = "importance-group";
+    section.innerHTML = `
+      <button type="button" class="group-toggle" data-group="${def.key}" aria-expanded="${def.open ? "true" : "false"}">
+        <span>${escapeHtml(def.label)}</span>
+        <span class="pill">${arr.length}</span>
+      </button>
+      <div class="group-body ${def.open ? "" : "hidden"}"></div>
+    `;
+    const body = section.querySelector(".group-body");
+    if (body) {
+      for (const item of arr) {
+        const isRead = readSet.has(item.id);
+        const importanceClass =
+          def.key === "VERY_IMPORTANT"
+            ? "importance-very-important"
+            : def.key === "IMPORTANT"
+              ? "importance-important"
+              : "";
+        const card = document.createElement("article");
+        card.className = `news-card ${importanceClass} ${isRead ? "seen" : "new"}`.trim();
+        card.innerHTML = `
+          <div class="card-head">
+            <a class="title" href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title || "(Baslik yok)")}</a>
+            <details class="card-menu">
+              <summary>⋯</summary>
+              <div class="menu-pop">
+                <button type="button" class="news-action-btn" data-action="toggleRead" data-id="${escapeHtml(item.id)}">${isRead ? "Okunmamis Yap" : "Okundu Yap"}</button>
+                <button type="button" class="news-action-btn" data-action="save" data-id="${escapeHtml(item.id)}">Kaydet</button>
+                <button type="button" class="news-action-btn" data-action="muteKeyword" data-keyword="${escapeHtml(item.keyword || "")}">Keyword Sessize Al</button>
+                <button type="button" class="news-action-btn" data-action="blockSource" data-link="${escapeHtml(item.link || "")}">Kaynagi Engelle</button>
+              </div>
+            </details>
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(item.keyword || "")}</span>
+            <span>${escapeHtml(item.pubDate || "")}</span>
+            <span class="importance-badge ${escapeHtml(importanceClass)}">${def.key === "VERY_IMPORTANT" ? "Cok Onemli" : def.key === "IMPORTANT" ? "Onemli" : "Onemsiz"}</span>
+          </div>
+        `;
+        body.appendChild(card);
+      }
+    }
+    el.newsList.appendChild(section);
+  }
+
+  if (totalRendered === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = activeTab === "read" ? "Kayit yok." : "Okunmamis haber yok.";
+    el.newsList.appendChild(div);
+  }
+}
+

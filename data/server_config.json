@@ -1,5 +1,6 @@
 {
-    "keywords": "trgyo\nSNGYO\nenka\nCLEBI\nkchol",
+    "keywords": "trgyo\nSNGYO\nenka\nCLEBI\nkchol\ngayrimenkul",
+    "bannedWords": "vietnam",
     "lang": "tr",
     "country": "TR",
     "interval": 120,
@@ -34,5 +35,5 @@
             "range": 30
         }
     ],
-    "updatedAt": 1771223100
+    "updatedAt": 1771534635
 }

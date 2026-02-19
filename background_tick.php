@@ -93,6 +93,32 @@ function parseKeywordsTick(string $raw): array {
     return $out;
 }
 
+function parseBannedWordsTick(string $raw): array {
+    $parts = preg_split('/[\r\n,]+/', $raw) ?: [];
+    $out = [];
+    $seen = [];
+    foreach ($parts as $part) {
+        $k = trim(mb_strtolower($part));
+        if ($k === '') continue;
+        if (isset($seen[$k])) continue;
+        $seen[$k] = true;
+        $out[] = $k;
+        if (count($out) >= 200) break;
+    }
+    return $out;
+}
+
+function hasBannedWordTick(string $title, string $link, array $bannedWords): bool {
+    if (count($bannedWords) === 0) return false;
+    $haystack = mb_strtolower($title . ' ' . $link);
+    foreach ($bannedWords as $word) {
+        if ($word !== '' && mb_strpos($haystack, $word) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function buildRssUrlTick(string $keyword, string $lang, string $country): string {
     $q = rawurlencode($keyword);
     return "https://news.google.com/rss/search?q={$q}&hl={$lang}&gl={$country}&ceid={$country}:{$lang}";
@@ -136,6 +162,7 @@ function runNewsTick(array $config, string $dataDir, array $pushCfg): array {
     $oldItems = is_array($state['items'] ?? null) ? $state['items'] : [];
 
     $keywords = parseKeywordsTick((string)($config['keywords'] ?? ''));
+    $bannedWords = parseBannedWordsTick((string)($config['bannedWords'] ?? ''));
     $lang = preg_replace('/[^a-z]/i', '', strtolower((string)($config['lang'] ?? 'tr'))) ?: 'tr';
     $country = preg_replace('/[^a-z]/i', '', strtoupper((string)($config['country'] ?? 'TR'))) ?: 'TR';
 
@@ -150,6 +177,7 @@ function runNewsTick(array $config, string $dataDir, array $pushCfg): array {
     $all = [];
     $newCount = 0;
     $newItems = [];
+    $filteredCount = 0;
     $minTs = time() - (3 * 24 * 60 * 60);
     $checkedKeywords = 0;
     foreach ($keywords as $keyword) {
@@ -173,6 +201,10 @@ function runNewsTick(array $config, string $dataDir, array $pushCfg): array {
             $pubDate = trim((string)$item->pubDate);
             if ($guid === '') $guid = $link;
             if ($guid === '') continue;
+            if (hasBannedWordTick($title, $link, $bannedWords)) {
+                $filteredCount++;
+                continue;
+            }
             $pubTs = strtotime($pubDate) ?: 0;
             if ($pubTs <= 0 || $pubTs < $minTs) continue;
             $id = hash('sha256', $keyword . '|' . $guid);
@@ -207,7 +239,7 @@ function runNewsTick(array $config, string $dataDir, array $pushCfg): array {
         if (count($dedup) >= 300) break;
     }
 
-    appendLogTick($logs, "News tick tamamlandi. Keyword: {$checkedKeywords}, yeni: {$newCount}, cekilen: " . count($dedup), 'info');
+    appendLogTick($logs, "News tick tamamlandi. Keyword: {$checkedKeywords}, yeni: {$newCount}, cekilen: " . count($dedup) . ", filtrelenen: {$filteredCount}", 'info');
     if ($newCount > 0 && ($pushCfg['telegramToken'] ?? '') !== '' && ($pushCfg['telegramChatId'] ?? '') !== '') {
         $first = $newItems[0] ?? null;
         if (is_array($first)) {
@@ -225,7 +257,7 @@ function runNewsTick(array $config, string $dataDir, array $pushCfg): array {
         'logs' => $logs,
     ];
     saveJsonFileTick($path, $state);
-    return ['newCount' => $newCount, 'total' => count($dedup), 'checkedKeywords' => $checkedKeywords];
+    return ['newCount' => $newCount, 'total' => count($dedup), 'checkedKeywords' => $checkedKeywords, 'filteredCount' => $filteredCount];
 }
 
 function runKapTick(array $config, string $dataDir, array $pushCfg): array {
@@ -380,8 +412,9 @@ function runKapTick(array $config, string $dataDir, array $pushCfg): array {
 
 $envFile = loadEnvFile(__DIR__ . DIRECTORY_SEPARATOR . '.env');
 $tokenEnv = envTick('CRON_TOKEN', $envFile, '');
-$tokenReq = (string)($_GET['token'] ?? '');
-if ($tokenEnv !== '' && !hash_equals($tokenEnv, $tokenReq)) {
+$isCli = (PHP_SAPI === 'cli');
+$tokenReq = $isCli ? $tokenEnv : (string)($_GET['token'] ?? '');
+if (!$isCli && $tokenEnv !== '' && !hash_equals($tokenEnv, $tokenReq)) {
     respondTick(401, ['ok' => false, 'error' => 'Unauthorized']);
 }
 

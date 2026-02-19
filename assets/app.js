@@ -1,4 +1,4 @@
-const STORAGE_KEYS = {
+﻿const STORAGE_KEYS = {
   config: "newsTrackerConfigV1",
   seen: "newsTrackerSeenIdsV1",
   read: "newsTrackerReadIdsV1",
@@ -12,16 +12,29 @@ const STORAGE_KEYS = {
   aiLogs: "aiLogsV1",
   aiSeen: "aiSeenV1",
   aiLevels: "aiLevelsV1",
+  aiAnalysis: "aiAnalysisV1",
+  savedNews: "savedNewsIdsV1",
+  mutedKeywords: "mutedKeywordsV1",
+  blockedSources: "blockedSourcesV1",
 };
 
 const el = {
   keywords: document.getElementById("keywords"),
+  keywordTags: document.getElementById("keywordTags"),
+  addKeywordInput: document.getElementById("addKeywordInput"),
+  addKeywordBtn: document.getElementById("addKeywordBtn"),
+  bannedWords: document.getElementById("bannedWords"),
   interval: document.getElementById("interval"),
   lang: document.getElementById("lang"),
   country: document.getElementById("country"),
-  startBtn: document.getElementById("startBtn"),
-  stopBtn: document.getElementById("stopBtn"),
+  autoRefreshToggle: document.getElementById("autoRefreshToggle"),
+  feedSearchInput: document.getElementById("feedSearchInput"),
+  unreadCountBadge: document.getElementById("unreadCountBadge"),
+  dailySummaryList: document.getElementById("dailySummaryList"),
+  refreshNowBtn: document.getElementById("refreshNowBtn"),
+  nextPollCountdown: document.getElementById("nextPollCountdown"),
   clearSeenBtn: document.getElementById("clearSeenBtn"),
+  installAppBtn: document.getElementById("installAppBtn"),
   status: document.getElementById("status"),
   newsList: document.getElementById("newsList"),
   aiLogsList: document.getElementById("aiLogsList"),
@@ -56,6 +69,9 @@ const el = {
 };
 
 let pollTimer = null;
+let pollDelayTimer = null;
+let countdownTimer = null;
+let nextNewsPollAt = 0;
 let firstRun = true;
 let activeTab = "unread";
 let latestItems = [];
@@ -71,7 +87,9 @@ let kapJobs = [];
 let kapActiveTab = "unread";
 let kapLogs = [];
 let serverConfigSyncTimer = null;
-const ALWAYS_ON_MODE = true;
+let deferredInstallPrompt = null;
+let selectedCardIndex = -1;
+let keyboardBound = false;
 
 function formatDateTime(ts) {
   if (!ts) return "-";
@@ -91,15 +109,81 @@ function setStatus(text, isError = false) {
   el.status.classList.toggle("error", isError);
 }
 
+function formatCountdown(ms) {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+}
+
+function setNextPollAt(ts) {
+  nextNewsPollAt = Number(ts || 0);
+  updateCountdown();
+}
+
+function updateCountdown() {
+  if (!el.nextPollCountdown) return;
+  if (!nextNewsPollAt || nextNewsPollAt <= Date.now()) {
+    el.nextPollCountdown.textContent = "Sonraki sorgu: 00:00";
+    return;
+  }
+  el.nextPollCountdown.textContent = `Sonraki sorgu: ${formatCountdown(nextNewsPollAt - Date.now())}`;
+}
+
+function startCountdownTimer() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(updateCountdown, 1000);
+  updateCountdown();
+}
+
+function stopCountdownTimer() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+  setNextPollAt(0);
+}
+
+function getBasePath() {
+  const p = typeof window.__BASE_PATH__ === "string" ? window.__BASE_PATH__ : "";
+  return p.endsWith("/") ? p.slice(0, -1) : p;
+}
+
+function setupPwaInstall() {
+  if (!("serviceWorker" in navigator)) return;
+  const basePath = getBasePath();
+  const swPath = `${basePath}/sw.js`;
+  navigator.serviceWorker.register(swPath).catch(() => {
+    // no-op
+  });
+
+  window.addEventListener("beforeinstallprompt", (ev) => {
+    ev.preventDefault();
+    deferredInstallPrompt = ev;
+    if (el.installAppBtn) {
+      el.installAppBtn.classList.remove("hidden");
+    }
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    if (el.installAppBtn) {
+      el.installAppBtn.classList.add("hidden");
+    }
+  });
+}
+
 function loadConfig() {
   const raw = localStorage.getItem(STORAGE_KEYS.config);
   if (!raw) return;
   try {
     const cfg = JSON.parse(raw);
     if (cfg.keywords) el.keywords.value = cfg.keywords;
+    if (cfg.bannedWords && el.bannedWords) el.bannedWords.value = cfg.bannedWords;
     if (cfg.interval !== undefined) el.interval.value = String(cfg.interval);
     if (cfg.lang) el.lang.value = cfg.lang;
     if (cfg.country) el.country.value = cfg.country;
+    if (el.autoRefreshToggle && cfg.autoRefresh !== undefined) el.autoRefreshToggle.checked = Boolean(cfg.autoRefresh);
     if (cfg.kapLinks && el.kapLinks) el.kapLinks.value = cfg.kapLinks;
     if (Array.isArray(cfg.kapJobs)) {
       kapJobs = cfg.kapJobs;
@@ -113,9 +197,11 @@ function loadConfig() {
 function saveConfig() {
   const cfg = {
     keywords: el.keywords.value.trim(),
+    bannedWords: el.bannedWords ? el.bannedWords.value.trim() : "",
     interval: Number(el.interval.value || 120),
     lang: (el.lang.value || "tr").trim(),
     country: (el.country.value || "TR").trim(),
+    autoRefresh: el.autoRefreshToggle ? Boolean(el.autoRefreshToggle.checked) : true,
     kapLinks: el.kapLinks ? el.kapLinks.value.trim() : "",
     kapJobs,
     kapDateRange: el.kapDateRange ? Number(el.kapDateRange.value || 365) : 365,
@@ -127,9 +213,11 @@ function saveConfig() {
 function getCurrentConfigPayload() {
   return {
     keywords: el.keywords.value.trim(),
+    bannedWords: el.bannedWords ? el.bannedWords.value.trim() : "",
     interval: Number(el.interval.value || 120),
     lang: (el.lang.value || "tr").trim(),
     country: (el.country.value || "TR").trim(),
+    autoRefresh: el.autoRefreshToggle ? Boolean(el.autoRefreshToggle.checked) : true,
     kapJobs: kapJobs.map((j) => ({
       id: String(j.id || ""),
       url: String(j.url || ""),
@@ -439,6 +527,57 @@ function setMainTab(tab) {
   el.mainTabKap.classList.toggle("active", tab === "kap");
   el.newsPanel.classList.toggle("hidden", tab !== "news");
   el.kapPanel.classList.toggle("hidden", tab !== "kap");
+  if (el.markAllReadBtn) el.markAllReadBtn.classList.toggle("hidden", tab !== "news");
+  if (el.kapMarkAllReadBtn) el.kapMarkAllReadBtn.classList.toggle("hidden", tab !== "kap");
+
+  // KAP paneline gecildiginde "okunmamis" filtresi bos kalirsa otomatik tum kayitlari goster.
+  if (tab === "kap") {
+    if (kapItems.length > 0 && activeTab === "unread" && getKapUnreadItems().length === 0) {
+      setActiveTab("read");
+    } else {
+      renderKapItems(kapItems);
+    }
+    return;
+  }
+  renderItems(latestItems);
+}
+
+function setAccordionOpen(cardEl, bodyEl, open) {
+  if (!cardEl || !bodyEl) return;
+  if (open) {
+    bodyEl.classList.remove("hidden");
+    bodyEl.style.maxHeight = `${bodyEl.scrollHeight}px`;
+    cardEl.classList.add("open");
+  } else {
+    bodyEl.style.maxHeight = `${bodyEl.scrollHeight}px`;
+    requestAnimationFrame(() => {
+      bodyEl.style.maxHeight = "0px";
+      cardEl.classList.remove("open");
+    });
+    setTimeout(() => {
+      if (!cardEl.classList.contains("open")) {
+        bodyEl.classList.add("hidden");
+      }
+    }, 280);
+  }
+}
+
+function setupAccordionToggle(cardEl, bodyEl, toggleBtn, openByDefault = false) {
+  if (!cardEl || !bodyEl || !toggleBtn) return;
+  bodyEl.classList.remove("hidden");
+  bodyEl.style.overflow = "hidden";
+  bodyEl.style.transition = "max-height 0.28s ease";
+  if (openByDefault) {
+    bodyEl.style.maxHeight = `${bodyEl.scrollHeight}px`;
+    cardEl.classList.add("open");
+  } else {
+    bodyEl.style.maxHeight = "0px";
+    cardEl.classList.remove("open");
+  }
+  toggleBtn.addEventListener("click", () => {
+    const willOpen = !cardEl.classList.contains("open");
+    setAccordionOpen(cardEl, bodyEl, willOpen);
+  });
 }
 
 function normalizeKapJob(job) {
@@ -573,16 +712,73 @@ function saveKapCache(items) {
 
 function setKapActiveTab(tab) {
   kapActiveTab = tab;
-  if (el.kapTabUnread) el.kapTabUnread.classList.toggle("active", tab === "unread");
-  if (el.kapTabRead) el.kapTabRead.classList.toggle("active", tab === "read");
   renderKapItems(kapItems);
 }
 
 function getKapVisibleItems(items, kapReadSet) {
-  if (kapActiveTab === "read") {
-    return items.filter((x) => kapReadSet.has(x.id));
-  }
+  if (activeTab === "read") return items;
   return items.filter((x) => !kapReadSet.has(x.id));
+}
+
+function markNewsIdsRead(ids, markRead) {
+  const readSet = getSet(STORAGE_KEYS.read);
+  for (const id of ids) {
+    if (!id) continue;
+    if (markRead) readSet.add(id);
+    else readSet.delete(id);
+  }
+  saveSet(STORAGE_KEYS.read, readSet);
+}
+
+function markKapIdsRead(ids, markRead) {
+  const kapReadSet = getSet(STORAGE_KEYS.kapRead);
+  for (const id of ids) {
+    if (!id) continue;
+    if (markRead) kapReadSet.add(id);
+    else kapReadSet.delete(id);
+  }
+  saveSet(STORAGE_KEYS.kapRead, kapReadSet);
+}
+
+function saveIds(ids) {
+  const savedSet = getSet(STORAGE_KEYS.savedNews);
+  for (const id of ids) {
+    if (id) savedSet.add(id);
+  }
+  saveSet(STORAGE_KEYS.savedNews, savedSet);
+}
+
+function muteKeyword(keyword) {
+  const normalized = String(keyword || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const muted = getSet(STORAGE_KEYS.mutedKeywords);
+  muted.add(normalized);
+  saveSet(STORAGE_KEYS.mutedKeywords, muted);
+  return true;
+}
+
+function blockSource(sourceOrUrl) {
+  const raw = String(sourceOrUrl || "").trim();
+  if (!raw) return false;
+  let normalized = raw.toLowerCase();
+  try {
+    const u = new URL(raw);
+    normalized = (u.hostname || "").replace(/^www\./, "").toLowerCase();
+  } catch (_) {
+    normalized = normalized.replace(/^www\./, "");
+  }
+  if (!normalized) return false;
+  const blocked = getSet(STORAGE_KEYS.blockedSources);
+  blocked.add(normalized);
+  saveSet(STORAGE_KEYS.blockedSources, blocked);
+  return true;
+}
+
+function parseIdList(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
 function getKapUnreadItems() {
@@ -605,36 +801,105 @@ function renderKapItems(items) {
   if (!el.kapList) return;
   el.kapList.innerHTML = "";
   const kapReadSet = getSet(STORAGE_KEYS.kapRead);
-  const visible = getKapVisibleItems(items || [], kapReadSet);
-  if (!visible || visible.length === 0) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = kapActiveTab === "read" ? "Okunan KAP bildirimi yok." : "Okunmamis KAP bildirimi yok.";
-    el.kapList.appendChild(li);
-    return;
-  }
-
-  for (const item of visible) {
-    const isRead = kapReadSet.has(item.id);
-    const li = document.createElement("li");
-    li.className = isRead ? "seen" : "new";
-    li.innerHTML = `
-      <a href="${escapeHtml(item.link || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title || "(Baslik yok)")}</a>
-      <div class="meta">
-        <span>${escapeHtml(item.stockCode || "")}</span>
-        <span>${escapeHtml(item.companyTitle || "")}</span>
-        <span>${escapeHtml(item.publishDate || "")}</span>
-        <span>${escapeHtml(item.type || "")}</span>
-      </div>
-      <div>${escapeHtml(item.summary || "")}</div>
-      <div class="item-actions">
-        <button type="button" class="secondary kap-mark-read-btn" data-id="${escapeHtml(item.id)}">
-          ${isRead ? "Okunmamis Yap" : "Okundu Isaretle"}
-        </button>
-      </div>
+  const searchQuery = (el.feedSearchInput?.value || "").trim().toLowerCase();
+  const visibleRaw = getKapVisibleItems(items || [], kapReadSet).filter((item) => {
+    if (!searchQuery) return true;
+    const haystack = `${item.title || ""} ${item.stockCode || ""} ${item.companyTitle || ""} ${item.link || ""}`.toLowerCase();
+    return haystack.includes(searchQuery);
+  });
+  const clusters = clusterKapItems(visibleRaw, kapReadSet);
+  const groups = {
+    VERY_IMPORTANT: [],
+    IMPORTANT: [],
+    NOT_IMPORTANT: [],
+  };
+  for (const c of clusters) groups[c.maxLevel || "NOT_IMPORTANT"].push(c);
+  const defs = [
+    { key: "VERY_IMPORTANT", label: "Cok Onemli", open: true },
+    { key: "IMPORTANT", label: "Onemli", open: true },
+    { key: "NOT_IMPORTANT", label: "Diger", open: false },
+  ];
+  let totalRendered = 0;
+  for (const def of defs) {
+    const arr = groups[def.key];
+    totalRendered += arr.length;
+    const section = document.createElement("section");
+    section.className = "importance-group";
+    section.innerHTML = `
+      <button type="button" class="group-toggle" data-group="kap-${def.key}" aria-expanded="${def.open ? "true" : "false"}">
+        <span>${escapeHtml(def.label)}</span>
+        <span class="pill">${arr.length}</span>
+      </button>
+      <div class="group-body ${def.open ? "" : "hidden"}"></div>
     `;
-    el.kapList.appendChild(li);
+    const body = section.querySelector(".group-body");
+    if (body) {
+      for (const c of arr) {
+        const isRead = c.unreadCount === 0;
+        const importanceClass =
+          def.key === "VERY_IMPORTANT"
+            ? "importance-very-important"
+            : def.key === "IMPORTANT"
+              ? "importance-important"
+              : "";
+        const ids = c.items.map((x) => String(x.id || "")).filter(Boolean);
+        const mainItem = c.items[0] || {};
+        const sourceLabel = Array.from(c.sources).join(" • ") || "KAP";
+        const keywordLabel = Array.from(c.keywords).join(", ") || mainItem.stockCode || "-";
+        const card = document.createElement("article");
+        card.className = `news-card ${importanceClass} ${isRead ? "seen" : "new"}`.trim();
+        card.setAttribute("data-kind", "kap");
+        card.setAttribute("data-primary-id", String(mainItem.id || ""));
+        card.setAttribute("data-ids", ids.join(","));
+        card.setAttribute("data-item-link", String(c.link || ""));
+        card.setAttribute("data-source", String(Array.from(c.sources)[0] || ""));
+        card.innerHTML = `
+          <div class="card-head">
+            <a class="title" href="${escapeHtml(c.link || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(c.title || "(Baslik yok)")}</a>
+            <details class="card-menu">
+              <summary>...</summary>
+              <div class="menu-pop">
+                <button type="button" class="kap-action-btn" data-action="toggleRead" data-ids="${escapeHtml(ids.join(","))}">${isRead ? "Okunmamis Yap" : "Okundu Yap"}</button>
+                <button type="button" class="kap-action-btn" data-action="save" data-ids="${escapeHtml(ids.join(","))}">Kaydet</button>
+                <button type="button" class="kap-action-btn" data-action="muteKeyword" data-keyword="${escapeHtml(String(mainItem.stockCode || ""))}">Keyword Sessize Al</button>
+                <button type="button" class="kap-action-btn" data-action="blockSource" data-source="${escapeHtml(String(Array.from(c.sources)[0] || ""))}" data-link="${escapeHtml(c.link || "")}">Kaynagi Engelle</button>
+              </div>
+            </details>
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(sourceLabel)}</span>
+            <span>${escapeHtml(c.pubDate || "")}</span>
+            <span>${escapeHtml(keywordLabel)}</span>
+            <span class="importance-badge ${escapeHtml(importanceClass)}">${def.key === "VERY_IMPORTANT" ? "Cok Onemli" : def.key === "IMPORTANT" ? "Onemli" : "Onemsiz"}</span>
+          </div>
+          <div class="score-row">
+            <span class="score-text">Onem Skoru: ${Math.round(c.score)}/100</span>
+            <div class="score-track"><div class="score-fill ${escapeHtml(importanceClass)}" style="width:${Math.max(2, Math.min(100, Math.round(c.score)))}%"></div></div>
+          </div>
+          <div class="insight">${escapeHtml(c.aiInsight || "KAP siniflandirmasi bildirim tipine gore yapildi.")}</div>
+        `;
+        body.appendChild(card);
+      }
+    }
+    el.kapList.appendChild(section);
   }
+  if (totalRendered === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    if (kapJobs.length === 0) {
+      div.textContent = "KAP kaydi yok. Sol panelden KAP linki ekleyin.";
+    } else if ((items || []).length === 0) {
+      div.textContent = "Henuz KAP verisi yok. Sol panelden 'Manuel Cek' veya takip baslatin.";
+    } else {
+      div.textContent = activeTab === "read" ? "Kayit yok." : "Okunmamis KAP bildirimi yok.";
+    }
+    el.kapList.appendChild(div);
+  }
+  const newsReadSet = getSet(STORAGE_KEYS.read);
+  const newsVisible = getVisibleItems(latestItems, newsReadSet);
+  const newsClusters = clusterNewsItems(newsVisible, newsReadSet);
+  renderDailySummary(newsClusters, clusters);
+  setupKeyboardNavigation();
 }
 
 function markKapItemRead(id, markRead) {
@@ -936,6 +1201,288 @@ function parseKeywords() {
     .filter(Boolean);
 }
 
+function renderKeywordTags() {
+  if (!el.keywordTags) return;
+  const kws = parseKeywords();
+  el.keywordTags.innerHTML = "";
+  if (!kws.length) {
+    const span = document.createElement("span");
+    span.className = "tag muted";
+    span.textContent = "Keyword yok";
+    el.keywordTags.appendChild(span);
+    return;
+  }
+  for (const kw of kws) {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.innerHTML = `${escapeHtml(kw)} <button type="button" class="tag-remove" data-keyword="${escapeHtml(kw)}">x</button>`;
+    el.keywordTags.appendChild(tag);
+  }
+}
+
+function addKeyword(keyword) {
+  const k = String(keyword || "").trim();
+  if (!k) return false;
+  const kws = parseKeywords();
+  if (kws.some((x) => x.toLowerCase() === k.toLowerCase())) return false;
+  kws.push(k);
+  el.keywords.value = kws.join("\n");
+  renderKeywordTags();
+  saveConfig();
+  ensureAutoPolling();
+  return true;
+}
+
+function removeKeyword(keyword) {
+  const k = String(keyword || "").trim().toLowerCase();
+  if (!k) return;
+  const kws = parseKeywords().filter((x) => x.toLowerCase() !== k);
+  el.keywords.value = kws.join("\n");
+  renderKeywordTags();
+  saveConfig();
+  ensureAutoPolling();
+}
+
+function parseBannedWords() {
+  if (!el.bannedWords) return [];
+  const seen = new Set();
+  return el.bannedWords.value
+    .split(/\r?\n/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => {
+      if (!s) return false;
+      if (seen.has(s)) return false;
+      seen.add(s);
+      return true;
+    });
+}
+
+function getMutedKeywordsSet() {
+  return getSet(STORAGE_KEYS.mutedKeywords);
+}
+
+function getBlockedSourcesSet() {
+  return getSet(STORAGE_KEYS.blockedSources);
+}
+
+function inferSourceName(item) {
+  const title = String(item.title || "");
+  const link = String(item.link || "");
+  const m = title.match(/\s-\s([^-\n]+)$/);
+  if (m && m[1]) return m[1].trim();
+  try {
+    const u = new URL(link);
+    return (u.hostname || "").replace(/^www\./, "");
+  } catch (_) {
+    return "";
+  }
+}
+
+function normalizeTitleForCluster(title) {
+  return String(title || "")
+    .toLowerCase()
+    .replace(/\s-\s[^-\n]{2,60}$/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function titleFingerprint(title) {
+  const normalized = normalizeTitleForCluster(title);
+  const tokens = normalized.split(" ").filter(Boolean).slice(0, 8);
+  return tokens.join(" ");
+}
+
+function getImportanceScoreFromLevel(level) {
+  const l = String(level || "NOT_IMPORTANT").toUpperCase();
+  if (l === "VERY_IMPORTANT") return 86;
+  if (l === "IMPORTANT") return 68;
+  return 35;
+}
+
+function normalizeImportanceScore(value, level = "NOT_IMPORTANT") {
+  const num = Number(value);
+  if (Number.isFinite(num)) {
+    return Math.max(1, Math.min(100, Math.round(num)));
+  }
+  return getImportanceScoreFromLevel(level);
+}
+
+function scoreWithContext(base, sourceCount, unreadCount, ageMinutes) {
+  let s = base;
+  s += Math.min(10, Math.max(0, sourceCount - 1) * 3);
+  s += Math.min(6, unreadCount);
+  s -= Math.min(12, Math.floor(ageMinutes / 120));
+  return Math.max(1, Math.min(100, s));
+}
+
+function getAiAnalysisMap() {
+  return loadJsonObject(STORAGE_KEYS.aiAnalysis);
+}
+
+function saveAiAnalysisMap(mapObj) {
+  saveJsonObject(STORAGE_KEYS.aiAnalysis, mapObj);
+}
+
+function clusterNewsItems(items, readSet) {
+  const aiLevels = loadJsonObject(STORAGE_KEYS.aiLevels);
+  const aiAnalysis = getAiAnalysisMap();
+  const muted = getMutedKeywordsSet();
+  const blocked = getBlockedSourcesSet();
+  const byKey = new Map();
+  const now = Date.now();
+
+  for (const item of items) {
+    const keyword = String(item.keyword || "").toLowerCase();
+    const source = inferSourceName(item).toLowerCase();
+    if (keyword && muted.has(keyword)) continue;
+    if (source && blocked.has(source)) continue;
+
+    const key = `${keyword}|${titleFingerprint(item.title || "")}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        key,
+        title: item.title || "(Baslik yok)",
+        link: item.link || "",
+        pubTs: Number(item.pubTs || 0),
+        pubDate: item.pubDate || "",
+        items: [],
+        sources: new Set(),
+        keywords: new Set(),
+        maxLevel: "NOT_IMPORTANT",
+        score: 0,
+        aiScore: null,
+        unreadCount: 0,
+        aiInsight: "",
+      });
+    }
+    const cluster = byKey.get(key);
+    cluster.items.push(item);
+    const src = inferSourceName(item);
+    if (src) cluster.sources.add(src);
+    if (item.keyword) cluster.keywords.add(item.keyword);
+    const level = String(aiLevels[item.id] || "NOT_IMPORTANT").toUpperCase();
+    if (level === "VERY_IMPORTANT" || (level === "IMPORTANT" && cluster.maxLevel !== "VERY_IMPORTANT")) {
+      cluster.maxLevel = level;
+    }
+    if (!readSet.has(item.id)) cluster.unreadCount += 1;
+    if (Number(item.pubTs || 0) > cluster.pubTs) {
+      cluster.pubTs = Number(item.pubTs || 0);
+      cluster.pubDate = item.pubDate || "";
+      cluster.title = item.title || cluster.title;
+      cluster.link = item.link || cluster.link;
+    }
+    const a = aiAnalysis[item.id];
+    if (!cluster.aiInsight && a && typeof a.summary === "string" && a.summary.trim() !== "") {
+      cluster.aiInsight = a.summary.trim();
+    }
+    if (!cluster.aiInsight && a && Array.isArray(a.impact_reasoning) && a.impact_reasoning.length > 0) {
+      cluster.aiInsight = String(a.impact_reasoning[0] || "").trim();
+    }
+    if (a) {
+      const aiScore = normalizeImportanceScore(a.importance_score, level);
+      if (cluster.aiScore === null || aiScore > cluster.aiScore) {
+        cluster.aiScore = aiScore;
+      }
+    }
+  }
+
+  const clusters = Array.from(byKey.values()).map((c) => {
+    const base = getImportanceScoreFromLevel(c.maxLevel);
+    const ageMinutes = c.pubTs > 0 ? Math.floor((now - c.pubTs * 1000) / 60000) : 9999;
+    c.score = c.aiScore !== null
+      ? c.aiScore
+      : scoreWithContext(base, c.sources.size, c.unreadCount, Math.max(0, ageMinutes));
+    return c;
+  });
+  clusters.sort((a, b) => b.score - a.score);
+  return clusters;
+}
+
+function clusterKapItems(items, readSet) {
+  const byKey = new Map();
+  const now = Date.now();
+  const blocked = getBlockedSourcesSet();
+  const muted = getMutedKeywordsSet();
+  for (const item of items) {
+    const keyword = String(item.stockCode || "").toLowerCase();
+    if (keyword && muted.has(keyword)) continue;
+    const source = inferSourceName(item).toLowerCase();
+    if (source && blocked.has(source)) continue;
+    const key = `${String(item.stockCode || "").toLowerCase()}|${titleFingerprint(item.title || "")}`;
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        key,
+        title: item.title || "(Baslik yok)",
+        link: item.link || "",
+        pubTs: Number(item.publishTs || 0),
+        pubDate: item.publishDate || "",
+        items: [],
+        sources: new Set(),
+        keywords: new Set(),
+        maxLevel: "NOT_IMPORTANT",
+        score: 0,
+        unreadCount: 0,
+        aiInsight: String(item.summary || "").trim(),
+      });
+    }
+    const c = byKey.get(key);
+    c.items.push(item);
+    c.sources.add(inferSourceName(item) || "KAP");
+    if (item.stockCode) c.keywords.add(item.stockCode);
+    const level = getKapImportanceLevel(item);
+    if (level === "VERY_IMPORTANT" || (level === "IMPORTANT" && c.maxLevel !== "VERY_IMPORTANT")) c.maxLevel = level;
+    if (!readSet.has(item.id)) c.unreadCount += 1;
+    if (Number(item.publishTs || 0) > c.pubTs) {
+      c.pubTs = Number(item.publishTs || 0);
+      c.pubDate = item.publishDate || "";
+      c.title = item.title || c.title;
+      c.link = item.link || c.link;
+    }
+  }
+  const clusters = Array.from(byKey.values()).map((c) => {
+    const base = getImportanceScoreFromLevel(c.maxLevel);
+    const ageMinutes = c.pubTs > 0 ? Math.floor((now - c.pubTs * 1000) / 60000) : 9999;
+    c.score = scoreWithContext(base, c.sources.size, c.unreadCount, Math.max(0, ageMinutes));
+    return c;
+  });
+  clusters.sort((a, b) => b.score - a.score);
+  return clusters;
+}
+
+function getMissingAiAnalysisItems(items) {
+  const aiAnalysis = getAiAnalysisMap();
+  const aiSeenSet = getSet(STORAGE_KEYS.aiSeen);
+  return items.filter((item) => !aiSeenSet.has(item.id) || !aiAnalysis[item.id]);
+}
+
+function renderDailySummary(newsClusters, kapClusters) {
+  if (!el.dailySummaryList) return;
+  const lines = [];
+  const all = [...(newsClusters || []), ...(kapClusters || [])].sort((a, b) => b.score - a.score);
+  if (all.length > 0) {
+    const top = all[0];
+    lines.push(`${top.title} (${top.sources.size} kaynak)`);
+  }
+  const veryCount = all.filter((x) => x.maxLevel === "VERY_IMPORTANT").length;
+  const impCount = all.filter((x) => x.maxLevel === "IMPORTANT").length;
+  if (veryCount > 0) lines.push(`${veryCount} adet cok onemli gelisme tespit edildi.`);
+  if (impCount > 0) lines.push(`${impCount} adet onemli gelisme izleniyor.`);
+  const sectors = new Map();
+  for (const c of all) {
+    for (const k of c.keywords) {
+      const kk = String(k).toUpperCase();
+      sectors.set(kk, (sectors.get(kk) || 0) + 1);
+    }
+  }
+  const topK = Array.from(sectors.entries()).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (topK.length) {
+    lines.push(`Yuksek aktivite: ${topK.map(([k, v]) => `${k} (${v})`).join(", ")}`);
+  }
+  if (!lines.length) lines.push("Bugun icin ozetlenecek belirgin bir hareket yok.");
+  el.dailySummaryList.innerHTML = lines.map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+}
+
 async function requestNotificationPermission() {
   if (!("Notification" in window)) {
     setStatus("Bu tarayici Notification API desteklemiyor.", true);
@@ -971,45 +1518,270 @@ function setActiveTab(tab) {
 }
 
 function getVisibleItems(items, readSet) {
-  if (activeTab === "read") {
-    return items.filter((i) => readSet.has(i.id));
-  }
+  if (activeTab === "read") return items;
   return items.filter((i) => !readSet.has(i.id));
+}
+
+function getNewsImportanceLevel(item) {
+  const levels = loadJsonObject(STORAGE_KEYS.aiLevels);
+  const level = String(levels[item.id] || "NOT_IMPORTANT").toUpperCase();
+  if (level === "VERY_IMPORTANT" || level === "IMPORTANT") return level;
+  return "NOT_IMPORTANT";
+}
+
+function getKapImportanceLevel(item) {
+  const txt = `${String(item.type || "")} ${String(item.title || "")}`.toLowerCase();
+  const veryKeywords = [
+    "iflas",
+    "konkordato",
+    "birlesme",
+    "devralma",
+    "sermaye",
+    "bedelli",
+    "bedelsiz",
+    "temettu",
+    "finansal",
+    "bilan",
+    "kar",
+    "zarar",
+    "geri alim",
+  ];
+  const importantKeywords = ["genel kurul", "yatirim", "tesvik", "sozlesme", "ihale", "kredi", "borc", "faaliyet"];
+  if (veryKeywords.some((k) => txt.includes(k))) return "VERY_IMPORTANT";
+  if (importantKeywords.some((k) => txt.includes(k))) return "IMPORTANT";
+  return "NOT_IMPORTANT";
 }
 
 function renderItems(items) {
   const readSet = getSet(STORAGE_KEYS.read);
-  const visible = getVisibleItems(items, readSet);
+  const searchQuery = (el.feedSearchInput?.value || "").trim().toLowerCase();
+  const visibleRaw = getVisibleItems(items, readSet).filter((item) => {
+    if (!searchQuery) return true;
+    const haystack = `${item.title || ""} ${item.keyword || ""} ${item.link || ""}`.toLowerCase();
+    return haystack.includes(searchQuery);
+  });
+  const clusters = clusterNewsItems(visibleRaw, readSet);
   el.newsList.innerHTML = "";
 
-  if (visible.length === 0) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = activeTab === "read" ? "Okunan haber yok." : "Okunmamis haber yok.";
-    el.newsList.appendChild(li);
-    return;
+  const groups = { VERY_IMPORTANT: [], IMPORTANT: [], NOT_IMPORTANT: [] };
+  for (const c of clusters) groups[c.maxLevel || "NOT_IMPORTANT"].push(c);
+
+  const defs = [
+    { key: "VERY_IMPORTANT", label: "Cok Onemli", open: true },
+    { key: "IMPORTANT", label: "Onemli", open: true },
+    { key: "NOT_IMPORTANT", label: "Diger", open: false },
+  ];
+
+  let totalRendered = 0;
+  for (const def of defs) {
+    const arr = groups[def.key];
+    totalRendered += arr.length;
+    const section = document.createElement("section");
+    section.className = "importance-group";
+    section.innerHTML = `
+      <button type="button" class="group-toggle" data-group="${def.key}" aria-expanded="${def.open ? "true" : "false"}">
+        <span>${escapeHtml(def.label)}</span>
+        <span class="pill">${arr.length}</span>
+      </button>
+      <div class="group-body ${def.open ? "" : "hidden"}"></div>
+    `;
+    const body = section.querySelector(".group-body");
+    if (body) {
+      for (const c of arr) {
+        const isRead = c.unreadCount === 0;
+        const importanceClass = def.key === "VERY_IMPORTANT" ? "importance-very-important" : def.key === "IMPORTANT" ? "importance-important" : "";
+        const mainItem = c.items[0] || {};
+        const ids = c.items.map((x) => String(x.id || "")).filter(Boolean);
+        const card = document.createElement("article");
+        card.className = `news-card ${importanceClass} ${isRead ? "seen" : "new"}`.trim();
+        card.setAttribute("data-item-link", String(c.link || ""));
+        card.setAttribute("data-item-id", String(mainItem.id || ""));
+        card.setAttribute("data-kind", "news");
+        card.setAttribute("data-primary-id", String(mainItem.id || ""));
+        card.setAttribute("data-ids", ids.join(","));
+        card.setAttribute("data-source", String(Array.from(c.sources)[0] || ""));
+        card.innerHTML = `
+          <div class="card-head">
+            <a class="title" href="${escapeHtml(c.link || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(c.title || "(Baslik yok)")}</a>
+            <details class="card-menu">
+              <summary>...</summary>
+              <div class="menu-pop">
+                <button type="button" class="news-action-btn" data-action="toggleRead" data-ids="${escapeHtml(ids.join(","))}">${isRead ? "Okunmamis Yap" : "Okundu Yap"}</button>
+                <button type="button" class="news-action-btn" data-action="save" data-ids="${escapeHtml(ids.join(","))}">Kaydet</button>
+                <button type="button" class="news-action-btn" data-action="muteKeyword" data-keyword="${escapeHtml(String(mainItem.keyword || ""))}">Keyword Sessize Al</button>
+                <button type="button" class="news-action-btn" data-action="blockSource" data-source="${escapeHtml(String(Array.from(c.sources)[0] || ""))}" data-link="${escapeHtml(c.link || "")}">Kaynagi Engelle</button>
+              </div>
+            </details>
+          </div>
+          <div class="meta">
+            <span>${escapeHtml(Array.from(c.sources).join(" • ") || "-")}</span>
+            <span>${escapeHtml(c.pubDate || "")}</span>
+            <span>${escapeHtml(Array.from(c.keywords).join(", ") || "-")}</span>
+            <span class="importance-badge ${escapeHtml(importanceClass)}">${def.key === "VERY_IMPORTANT" ? "Cok Onemli" : def.key === "IMPORTANT" ? "Onemli" : "Onemsiz"}</span>
+          </div>
+          <div class="score-row">
+            <span class="score-text">Onem Skoru: ${Math.round(c.score)}/100</span>
+            <div class="score-track"><div class="score-fill ${escapeHtml(importanceClass)}" style="width:${Math.max(2, Math.min(100, Math.round(c.score)))}%"></div></div>
+          </div>
+          <div class="insight">${escapeHtml(c.aiInsight || "AI Insight: Bu haber benzer akislara gore siniflandirildi.")}</div>
+        `;
+        body.appendChild(card);
+      }
+    }
+    el.newsList.appendChild(section);
   }
 
-  for (const item of visible) {
-    const isRead = readSet.has(item.id);
-    const li = document.createElement("li");
-    li.className = isRead ? "seen" : "new";
-    li.innerHTML = `
-      <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title || "(Baslik yok)")}</a>
-      <div class="meta">
-        <span>${escapeHtml(item.keyword)}</span>
-        <span>${escapeHtml(item.pubDate || "")}</span>
-      </div>
-      <div class="item-actions">
-        <button type="button" class="secondary mark-read-btn" data-id="${escapeHtml(item.id)}">
-          ${isRead ? "Okunmamis Yap" : "Okundu Isaretle"}
-        </button>
-      </div>
-    `;
-    el.newsList.appendChild(li);
+  if (totalRendered === 0) {
+    const div = document.createElement("div");
+    div.className = "empty";
+    div.textContent = activeTab === "read" ? "Kayit yok." : "Okunmamis haber yok.";
+    el.newsList.appendChild(div);
+  }
+  const kapReadSet = getSet(STORAGE_KEYS.kapRead);
+  const kapVisible = getKapVisibleItems(kapItems, kapReadSet);
+  const kapClusters = clusterKapItems(kapVisible, kapReadSet);
+  renderDailySummary(clusters, kapClusters);
+  setupKeyboardNavigation();
+}
+
+function applyCardAction(kind, action, ids, keyword, source, link) {
+  const list = ids.filter(Boolean);
+  if (kind === "news") {
+    const readSet = getSet(STORAGE_KEYS.read);
+    if (action === "toggleRead" && list.length) {
+      const shouldRead = list.some((id) => !readSet.has(id));
+      markNewsIdsRead(list, shouldRead);
+      renderItems(latestItems);
+      updateStatusCounts();
+      return;
+    }
+  }
+  if (kind === "kap") {
+    const kapReadSet = getSet(STORAGE_KEYS.kapRead);
+    if (action === "toggleRead" && list.length) {
+      const shouldRead = list.some((id) => !kapReadSet.has(id));
+      markKapIdsRead(list, shouldRead);
+      renderKapItems(kapItems);
+      const unreadCount = getKapUnreadItems().length;
+      setKapStatus(`KAP okuma durumu guncellendi. Okunmamis: ${unreadCount}.`);
+      return;
+    }
+  }
+  if (action === "save" && list.length) {
+    saveIds(list);
+    if (kind === "kap") setKapStatus("Kayit favorilere eklendi.");
+    else setStatus("Kayit favorilere eklendi.");
+    return;
+  }
+  if (action === "muteKeyword" && muteKeyword(keyword)) {
+    if (kind === "kap") {
+      renderKapItems(kapItems);
+      setKapStatus(`Keyword sessize alindi: ${keyword}`);
+    } else {
+      renderItems(latestItems);
+      setStatus(`Keyword sessize alindi: ${keyword}`);
+    }
+    return;
+  }
+  if (action === "blockSource" && blockSource(source || link)) {
+    if (kind === "kap") {
+      renderKapItems(kapItems);
+      setKapStatus("Kaynak engellendi.");
+    } else {
+      renderItems(latestItems);
+      setStatus("Kaynak engellendi.");
+    }
+    return;
+  }
+  if (kind === "kap") setKapStatus("Aksiyon kaydedildi.");
+  else setStatus("Aksiyon kaydedildi.");
+}
+
+function getActiveCards() {
+  const root = activeMainTab === "kap" ? el.kapList : el.newsList;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll(".news-card"));
+}
+
+function highlightSelectedCard() {
+  const cards = getActiveCards();
+  if (cards.length === 0) {
+    selectedCardIndex = -1;
+    return;
+  }
+  if (selectedCardIndex < 0) selectedCardIndex = 0;
+  if (selectedCardIndex >= cards.length) selectedCardIndex = cards.length - 1;
+  for (const card of cards) card.classList.remove("selected");
+  const selected = cards[selectedCardIndex];
+  if (selected) {
+    selected.classList.add("selected");
+    selected.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 }
 
+function runKeyboardAction(action) {
+  const cards = getActiveCards();
+  if (!cards.length) return;
+  if (selectedCardIndex < 0 || selectedCardIndex >= cards.length) selectedCardIndex = 0;
+  const card = cards[selectedCardIndex];
+  if (!card) return;
+  const kind = String(card.getAttribute("data-kind") || "news");
+  const ids = parseIdList(card.getAttribute("data-ids"));
+  const source = String(card.getAttribute("data-source") || "");
+  const link = String(card.getAttribute("data-item-link") || "");
+
+  if (action === "open" && link) {
+    window.open(link, "_blank");
+    return;
+  }
+  if (action === "mark") {
+    applyCardAction(kind, "toggleRead", ids, "", source, link);
+    return;
+  }
+  if (action === "save") {
+    applyCardAction(kind, "save", ids, "", source, link);
+  }
+}
+
+function setupKeyboardNavigation() {
+  selectedCardIndex = -1;
+  highlightSelectedCard();
+  if (keyboardBound) return;
+  keyboardBound = true;
+  document.addEventListener("keydown", (ev) => {
+    const target = ev.target;
+    if (target instanceof HTMLElement) {
+      const tag = target.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable) return;
+    }
+    if (ev.key === "j" || ev.key === "J") {
+      ev.preventDefault();
+      selectedCardIndex += 1;
+      highlightSelectedCard();
+      return;
+    }
+    if (ev.key === "k" || ev.key === "K") {
+      ev.preventDefault();
+      selectedCardIndex -= 1;
+      highlightSelectedCard();
+      return;
+    }
+    if (ev.key === "o" || ev.key === "O") {
+      ev.preventDefault();
+      runKeyboardAction("open");
+      return;
+    }
+    if (ev.key === "m" || ev.key === "M") {
+      ev.preventDefault();
+      runKeyboardAction("mark");
+      return;
+    }
+    if (ev.key === "s" || ev.key === "S") {
+      ev.preventDefault();
+      runKeyboardAction("save");
+    }
+  });
+}
 function markItemRead(id, markRead) {
   const readSet = getSet(STORAGE_KEYS.read);
   if (markRead) {
@@ -1025,6 +1797,9 @@ function updateStatusCounts(errorsText = "") {
   const readSet = getSet(STORAGE_KEYS.read);
   const unreadCount = latestItems.filter((i) => !readSet.has(i.id)).length;
   const readCount = latestItems.length - unreadCount;
+  if (el.unreadCountBadge) {
+    el.unreadCountBadge.textContent = `Okunmamis: ${unreadCount}`;
+  }
   setStatus(`Toplam: ${latestItems.length} | Okunmamis: ${unreadCount} | Okunan: ${readCount}${errorsText}`);
 }
 
@@ -1101,7 +1876,20 @@ async function analyzeNewsWithDeepseek(item) {
         pubDate: item.pub_date || item.pubDate || "",
       }),
     });
-    const data = await response.json();
+    const raw = await response.text();
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {
+      const shortRaw = String(raw || "").replace(/\s+/g, " ").slice(0, 220);
+      appendAiLog({
+        level: "ERROR",
+        keyword: item.keyword || "",
+        title: item.title || "",
+        message: `DeepSeek JSON degil (HTTP ${response.status}). ${shortRaw}`,
+      });
+      return null;
+    }
     if (!data.ok || !data.analysis) {
       appendAiLog({
         level: "ERROR",
@@ -1135,6 +1923,7 @@ async function analyzeNewsWithDeepseek(item) {
 async function runAiAnalysisForQueue(queue, firstRunGate) {
   const aiSeenSet = getSet(STORAGE_KEYS.aiSeen);
   const aiLevels = loadJsonObject(STORAGE_KEYS.aiLevels);
+  const aiAnalysisMap = getAiAnalysisMap();
   let importantPushCount = 0;
   let analyzedCount = 0;
   let autoReadCount = 0;
@@ -1147,7 +1936,9 @@ async function runAiAnalysisForQueue(queue, firstRunGate) {
     const analysis = await analyzeNewsWithDeepseek(item);
     if (!analysis) continue;
     const level = normalizeNotificationLevel(analysis);
+    analysis.importance_score = normalizeImportanceScore(analysis.importance_score, level);
     aiLevels[item.id] = level;
+    aiAnalysisMap[item.id] = analysis;
     const readSetBefore = getSet(STORAGE_KEYS.read);
     const wasRead = readSetBefore.has(item.id);
     applyAiImportanceRule(item, level);
@@ -1168,14 +1959,15 @@ async function runAiAnalysisForQueue(queue, firstRunGate) {
 
   saveSet(STORAGE_KEYS.aiSeen, aiSeenSet);
   saveJsonObject(STORAGE_KEYS.aiLevels, aiLevels);
+  saveAiAnalysisMap(aiAnalysisMap);
   renderItems(latestItems);
   return { analyzedCount, importantPushCount, autoReadCount, forcedUnreadCount };
 }
 
 async function scanAiBacklogNow() {
   const readSet = getSet(STORAGE_KEYS.read);
-  const aiSeenSet = getSet(STORAGE_KEYS.aiSeen);
-  const backlog = latestItems.filter((item) => !readSet.has(item.id) && !aiSeenSet.has(item.id));
+  const missingAnalysis = getMissingAiAnalysisItems(latestItems);
+  const backlog = latestItems.filter((item) => !readSet.has(item.id)).filter((item) => missingAnalysis.some((m) => m.id === item.id));
   if (backlog.length === 0) {
     setStatus("AI backlog bos. Analiz edilmemis okunmamis haber yok.");
     return;
@@ -1228,9 +2020,12 @@ async function hydrateFromBackgroundData() {
 
 async function fetchNews() {
   const keywords = parseKeywords();
+  const bannedWords = parseBannedWords();
   const interval = Number(el.interval.value || 120);
   const lang = (el.lang.value || "tr").trim();
   const country = (el.country.value || "TR").trim();
+
+  setNextPollAt(Date.now() + Math.max(30, interval) * 1000);
 
   if (keywords.length === 0) {
     setStatus("En az bir keyword girin.", true);
@@ -1252,6 +2047,7 @@ async function fetchNews() {
 
   const query = new URLSearchParams({
     keywords: keywords.join("\n"),
+    bannedWords: bannedWords.join("\n"),
     lang,
     country,
   });
@@ -1307,7 +2103,8 @@ async function fetchNews() {
   {
     const readSet = getSet(STORAGE_KEYS.read);
     const aiSeenSet = getSet(STORAGE_KEYS.aiSeen);
-    const backlog = latestItems.filter((item) => !readSet.has(item.id) && !aiSeenSet.has(item.id));
+    const aiAnalysisMap = getAiAnalysisMap();
+    const backlog = latestItems.filter((item) => !readSet.has(item.id) && (!aiSeenSet.has(item.id) || !aiAnalysisMap[item.id]));
     const analyzeQueue = [];
     const picked = new Set();
 
@@ -1330,6 +2127,7 @@ async function fetchNews() {
   const veryImportantUnreadCount = sendVeryImportantUnreadReminder();
 
   const errText = data.errors && data.errors.length ? ` | Uyarilar: ${data.errors.join(" ; ")}` : "";
+  const filteredText = Number(data.filteredCount || 0) > 0 ? ` | Filtrelenen: ${Number(data.filteredCount || 0)}` : "";
   firstRun = false;
   appendAiLog({
     level: "INFO",
@@ -1338,11 +2136,16 @@ async function fetchNews() {
     message: `Sorgu yapildi (${formatDateTime(Date.now())}). Yeni: ${newCount}, Toplam: ${latestItems.length}${data.errors && data.errors.length ? `, Uyari: ${data.errors.length}` : ""}`,
   });
   updateStatusCounts(
-    `${newCount > 0 ? ` | Yeni: ${newCount}` : ""}${importantPushCount > 0 ? ` | AI Push: ${importantPushCount}` : ""}${veryImportantUnreadCount > 0 ? ` | Cok Onemli Okunmamis: ${veryImportantUnreadCount}` : ""}${errText}`
+    `${newCount > 0 ? ` | Yeni: ${newCount}` : ""}${importantPushCount > 0 ? ` | AI Push: ${importantPushCount}` : ""}${veryImportantUnreadCount > 0 ? ` | Cok Onemli Okunmamis: ${veryImportantUnreadCount}` : ""}${filteredText}${errText}`
   );
 }
 
 function startPolling() {
+  if (el.autoRefreshToggle && !el.autoRefreshToggle.checked) {
+    stopPolling();
+    setStatus("Otomatik yenile kapali.");
+    return;
+  }
   const interval = Number(el.interval.value || 120);
   if (interval < 30) {
     setStatus("Kontrol suresi en az 30 saniye olmali.", true);
@@ -1354,51 +2157,81 @@ function startPolling() {
 
   const elapsed = Date.now() - lastFetchedAt;
   const intervalMs = interval * 1000;
+  startCountdownTimer();
   if (lastFetchedAt > 0 && elapsed < intervalMs) {
     const remaining = intervalMs - elapsed;
+    setNextPollAt(Date.now() + remaining);
     setStatus(`Kayitli veriler yuklendi. ${Math.ceil(remaining / 1000)} sn sonra yeni kontrol.`);
-    pollTimer = setTimeout(() => {
+    pollDelayTimer = setTimeout(() => {
+      setNextPollAt(Date.now() + intervalMs);
       fetchNews();
       pollTimer = setInterval(fetchNews, intervalMs);
     }, remaining);
   } else {
+    setNextPollAt(Date.now() + intervalMs);
     fetchNews();
     pollTimer = setInterval(fetchNews, intervalMs);
   }
-  el.startBtn.disabled = true;
-  el.stopBtn.disabled = false;
+}
+
+function ensureAutoPolling() {
+  if (el.autoRefreshToggle && !el.autoRefreshToggle.checked) {
+    stopPolling();
+    return;
+  }
+  const keywords = parseKeywords();
+  if (keywords.length === 0) {
+    stopPolling();
+    setStatus("Keyword bekleniyor. En az bir keyword girin.");
+    return;
+  }
+  if (!pollTimer && !pollDelayTimer) {
+    startPolling();
+  }
 }
 
 function stopPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
-    clearTimeout(pollTimer);
     pollTimer = null;
   }
+  if (pollDelayTimer) {
+    clearTimeout(pollDelayTimer);
+    pollDelayTimer = null;
+  }
   saveRuntimePatch({ newsRunning: false });
-  el.startBtn.disabled = false;
-  el.stopBtn.disabled = true;
+  stopCountdownTimer();
 }
 
-el.startBtn.addEventListener("click", async () => {
-  await requestNotificationPermission();
-  startPolling();
-});
+if (el.refreshNowBtn) {
+  el.refreshNowBtn.addEventListener("click", async () => {
+    const interval = Number(el.interval.value || 120);
+    await fetchNews();
+    setNextPollAt(Date.now() + Math.max(30, interval) * 1000);
+    setStatus("Manuel yenileme tamamlandi.");
+  });
+}
 
-el.stopBtn.addEventListener("click", () => {
-  if (ALWAYS_ON_MODE) {
-    setStatus("Surekli takip modu acik. Durdurma kapali.");
-    return;
-  }
-  stopPolling();
-  setStatus("Takip durduruldu.");
-});
+if (el.installAppBtn) {
+  el.installAppBtn.addEventListener("click", async () => {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    try {
+      await deferredInstallPrompt.userChoice;
+    } catch (_) {
+      // ignore
+    }
+    deferredInstallPrompt = null;
+    el.installAppBtn.classList.add("hidden");
+  });
+}
 
 el.clearSeenBtn.addEventListener("click", () => {
   localStorage.removeItem(STORAGE_KEYS.seen);
   localStorage.removeItem(STORAGE_KEYS.read);
   localStorage.removeItem(STORAGE_KEYS.aiSeen);
   localStorage.removeItem(STORAGE_KEYS.aiLevels);
+  localStorage.removeItem(STORAGE_KEYS.aiAnalysis);
   latestItems = [];
   renderItems(latestItems);
   setStatus("Gorulen ve okunan haber hafizasi temizlendi.");
@@ -1420,15 +2253,85 @@ el.markAllReadBtn.addEventListener("click", () => {
 el.newsList.addEventListener("click", (ev) => {
   const target = ev.target;
   if (!(target instanceof HTMLElement)) return;
-  const button = target.closest(".mark-read-btn");
-  if (!button) return;
-  const id = button.getAttribute("data-id");
-  if (!id) return;
-  const readSet = getSet(STORAGE_KEYS.read);
-  const isRead = readSet.has(id);
-  markItemRead(id, !isRead);
-  updateStatusCounts();
+  const groupToggle = target.closest(".group-toggle");
+  if (groupToggle instanceof HTMLElement) {
+    const section = groupToggle.closest(".importance-group");
+    const body = section ? section.querySelector(".group-body") : null;
+    if (body instanceof HTMLElement) {
+      const willOpen = body.classList.contains("hidden");
+      body.classList.toggle("hidden", !willOpen);
+      groupToggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    }
+    return;
+  }
+  const btn = target.closest(".news-action-btn");
+  if (!(btn instanceof HTMLElement)) return;
+  const action = btn.getAttribute("data-action") || "";
+  const ids = parseIdList(btn.getAttribute("data-ids"));
+  const keyword = btn.getAttribute("data-keyword") || "";
+  const source = btn.getAttribute("data-source") || "";
+  const link = btn.getAttribute("data-link") || "";
+  applyCardAction("news", action, ids, keyword, source, link);
 });
+
+if (el.keywordTags) {
+  el.keywordTags.addEventListener("click", (ev) => {
+    const target = ev.target;
+    if (!(target instanceof HTMLElement)) return;
+    const removeBtn = target.closest(".tag-remove");
+    if (!(removeBtn instanceof HTMLElement)) return;
+    const kw = removeBtn.getAttribute("data-keyword") || "";
+    removeKeyword(kw);
+  });
+}
+
+if (el.addKeywordBtn) {
+  el.addKeywordBtn.addEventListener("click", () => {
+    const value = el.addKeywordInput ? el.addKeywordInput.value : "";
+    if (addKeyword(value) && el.addKeywordInput) {
+      el.addKeywordInput.value = "";
+    }
+  });
+}
+
+if (el.addKeywordInput) {
+  el.addKeywordInput.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    if (addKeyword(el.addKeywordInput.value)) {
+      el.addKeywordInput.value = "";
+    }
+  });
+}
+
+for (const inputEl of [el.keywords, el.bannedWords, el.interval, el.lang, el.country]) {
+  if (!inputEl) continue;
+  inputEl.addEventListener("input", () => {
+    saveConfig();
+    ensureAutoPolling();
+  });
+  inputEl.addEventListener("change", () => {
+    saveConfig();
+    ensureAutoPolling();
+  });
+}
+
+if (el.feedSearchInput) {
+  el.feedSearchInput.addEventListener("input", () => {
+    if (activeMainTab === "kap") {
+      renderKapItems(kapItems);
+    } else {
+      renderItems(latestItems);
+    }
+  });
+}
+
+if (el.autoRefreshToggle) {
+  el.autoRefreshToggle.addEventListener("change", () => {
+    saveConfig();
+    ensureAutoPolling();
+  });
+}
 
 if (el.mainTabNews && el.mainTabKap) {
   el.mainTabNews.addEventListener("click", () => setMainTab("news"));
@@ -1472,10 +2375,6 @@ if (el.kapStartBtn) {
 
 if (el.kapStopBtn) {
   el.kapStopBtn.addEventListener("click", () => {
-    if (ALWAYS_ON_MODE) {
-      setKapStatus("Surekli takip modu acik. KAP durdurma kapali.");
-      return;
-    }
     stopKapRandomTracking();
   });
 }
@@ -1497,15 +2396,25 @@ if (el.kapList) {
   el.kapList.addEventListener("click", (ev) => {
     const target = ev.target;
     if (!(target instanceof HTMLElement)) return;
-    const btn = target.closest(".kap-mark-read-btn");
-    if (!btn) return;
-    const id = btn.getAttribute("data-id");
-    if (!id) return;
-    const kapReadSet = getSet(STORAGE_KEYS.kapRead);
-    const isRead = kapReadSet.has(id);
-    markKapItemRead(id, !isRead);
-    const unreadCount = getKapUnreadItems().length;
-    setKapStatus(`KAP okuma durumu guncellendi. Okunmamis: ${unreadCount}.`);
+    const groupToggle = target.closest(".group-toggle");
+    if (groupToggle instanceof HTMLElement) {
+      const section = groupToggle.closest(".importance-group");
+      const body = section ? section.querySelector(".group-body") : null;
+      if (body instanceof HTMLElement) {
+        const willOpen = body.classList.contains("hidden");
+        body.classList.toggle("hidden", !willOpen);
+        groupToggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+      }
+      return;
+    }
+    const btn = target.closest(".kap-action-btn");
+    if (!(btn instanceof HTMLElement)) return;
+    const action = btn.getAttribute("data-action") || "";
+    const ids = parseIdList(btn.getAttribute("data-ids"));
+    const keyword = btn.getAttribute("data-keyword") || "";
+    const source = btn.getAttribute("data-source") || "";
+    const link = btn.getAttribute("data-link") || "";
+    applyCardAction("kap", action, ids, keyword, source, link);
   });
 }
 
@@ -1580,13 +2489,15 @@ renderAiLogs();
 renderKapItems(kapItems);
 renderKapLogs();
 setKapTrackingButtons();
+setupPwaInstall();
+renderKeywordTags();
 
 hydrateFromBackgroundData();
 
 const runtime = loadRuntime();
-if (runtime.newsRunning || (ALWAYS_ON_MODE && parseKeywords().length > 0)) {
-  startPolling();
-}
-if (runtime.kapRunning || (ALWAYS_ON_MODE && kapJobs.length > 0)) {
+ensureAutoPolling();
+if (runtime.kapRunning || kapJobs.length > 0) {
   startKapRandomTracking(true);
 }
+
+

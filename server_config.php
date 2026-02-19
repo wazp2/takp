@@ -74,6 +74,27 @@ function sanitizeKeywords(string $raw): string {
     return implode("\n", $out);
 }
 
+function sanitizeBannedWords(string $raw): string {
+    $parts = preg_split('/[\r\n,]+/', $raw) ?: [];
+    $out = [];
+    $seen = [];
+    foreach ($parts as $part) {
+        $k = trim(mb_strtolower($part));
+        if ($k === '' || mb_strlen($k) > 100) {
+            continue;
+        }
+        if (isset($seen[$k])) {
+            continue;
+        }
+        $seen[$k] = true;
+        $out[] = $k;
+        if (count($out) >= 200) {
+            break;
+        }
+    }
+    return implode("\n", $out);
+}
+
 function sanitizeJobs(array $jobs): array {
     $out = [];
     foreach ($jobs as $job) {
@@ -130,6 +151,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = readJsonCfg();
 $config = [
     'keywords' => sanitizeKeywords((string)($input['keywords'] ?? '')),
+    'bannedWords' => sanitizeBannedWords((string)($input['bannedWords'] ?? '')),
     'lang' => preg_replace('/[^a-z]/i', '', strtolower((string)($input['lang'] ?? 'tr'))) ?: 'tr',
     'country' => preg_replace('/[^a-z]/i', '', strtoupper((string)($input['country'] ?? 'TR'))) ?: 'TR',
     'interval' => max(30, (int)($input['interval'] ?? 120)),
@@ -143,4 +165,3 @@ if (!saveConfig($config)) {
 }
 
 respondCfg(200, ['ok' => true, 'config' => $config]);
-

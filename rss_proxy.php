@@ -28,6 +28,37 @@ function sanitizeKeywords(string $raw): array {
     return array_values($keywords);
 }
 
+function sanitizeBannedWords(string $raw): array {
+    $parts = preg_split('/[\r\n,]+/', $raw) ?: [];
+    $out = [];
+    foreach ($parts as $part) {
+        $k = trim(mb_strtolower($part));
+        if ($k === '') {
+            continue;
+        }
+        if (mb_strlen($k) > 100) {
+            continue;
+        }
+        if (!isset($out[$k])) {
+            $out[$k] = true;
+        }
+    }
+    return array_keys($out);
+}
+
+function itemHasBannedWord(string $title, string $link, array $bannedWords): bool {
+    if (count($bannedWords) === 0) {
+        return false;
+    }
+    $haystack = mb_strtolower($title . ' ' . $link);
+    foreach ($bannedWords as $word) {
+        if ($word !== '' && mb_strpos($haystack, $word) !== false) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function buildRssUrl(string $keyword, string $lang, string $country): string {
     $q = rawurlencode($keyword);
     return "https://news.google.com/rss/search?q={$q}&hl={$lang}&gl={$country}&ceid={$country}:{$lang}";
@@ -50,6 +81,7 @@ function fetchRss(string $url): ?string {
 }
 
 $rawKeywords = (string)($_GET['keywords'] ?? '');
+$rawBannedWords = (string)($_GET['bannedWords'] ?? '');
 $lang = strtolower(preg_replace('/[^a-z]/i', '', (string)($_GET['lang'] ?? 'tr')));
 $country = strtoupper(preg_replace('/[^a-z]/i', '', (string)($_GET['country'] ?? 'TR')));
 
@@ -61,6 +93,7 @@ if ($country === '') {
 }
 
 $keywords = sanitizeKeywords($rawKeywords);
+$bannedWords = sanitizeBannedWords($rawBannedWords);
 if (count($keywords) === 0) {
     respond(400, ['ok' => false, 'error' => 'Keyword gerekli.']);
 }
@@ -70,6 +103,7 @@ if (count($keywords) > 20) {
 
 $allItems = [];
 $errors = [];
+$filteredCount = 0;
 $minTs = time() - (3 * 24 * 60 * 60);
 
 foreach ($keywords as $keyword) {
@@ -99,6 +133,10 @@ foreach ($keywords as $keyword) {
             $guid = $link;
         }
         if ($guid === '') {
+            continue;
+        }
+        if (itemHasBannedWord($title, $link, $bannedWords)) {
+            $filteredCount++;
             continue;
         }
 
@@ -138,5 +176,6 @@ respond(200, [
     'ok' => true,
     'count' => count($dedup),
     'items' => array_slice($dedup, 0, 200),
+    'filteredCount' => $filteredCount,
     'errors' => $errors,
 ]);

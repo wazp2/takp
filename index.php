@@ -17,31 +17,51 @@ $inlineJs = is_file($jsPath) ? (string)file_get_contents($jsPath) : '';
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sirket Haber Takip</title>
+  <meta name="theme-color" content="#0b6bcb">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Sirket Haber Takip">
   <link rel="icon" type="image/png" href="<?= htmlspecialchars($basePath . '/icons/websiteicon.png', ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="apple-touch-icon" href="<?= htmlspecialchars($basePath . '/icons/icon-192.png', ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="manifest" href="<?= htmlspecialchars($basePath . '/site.webmanifest', ENT_QUOTES, 'UTF-8') ?>">
   <?php if ($inlineCss !== ''): ?>
   <style><?= $inlineCss ?></style>
   <?php endif; ?>
 </head>
 <body>
-  <main class="container">
-    <h1>Sirket Haber Takip</h1>
-    <p class="sub">Google News RSS ile keyword bazli yeni haber takibi</p>
+  <main class="container dashboard">
+    <aside class="sidebar card">
+      <h1>Sirket Haber Takip</h1>
+      <p class="sub">AI destekli finansal haber takip paneli</p>
 
-    <section class="card">
-      <div class="tabs">
-        <button id="mainTabNews" type="button" class="tab active">Google News</button>
-        <button id="mainTabKap" type="button" class="tab">KAP Scraping</button>
+      <div class="section">
+        <label>Keywordler</label>
+        <div id="keywordTags" class="keyword-tags"></div>
+        <div class="inline-row">
+          <input id="addKeywordInput" type="text" placeholder="Yeni keyword ekle">
+          <button id="addKeywordBtn" type="button">Ekle</button>
+        </div>
+        <textarea id="keywords" class="hidden" rows="6"></textarea>
       </div>
-    </section>
 
-    <div id="newsPanel">
-      <section class="card">
-        <label for="keywords">Keywordler (her satira bir tane)</label>
-        <textarea id="keywords" rows="6" placeholder="Aselsan&#10;TUPRAS&#10;Microsoft"></textarea>
+      <div class="section">
+        <label for="bannedWords">Banned Words</label>
+        <textarea id="bannedWords" rows="4" placeholder="vietnam&#10;gayrimenkul&#10;konser"></textarea>
+      </div>
 
+      <div class="section">
+        <label>Kaynak</label>
+        <div class="source-toggle">
+          <button id="mainTabNews" type="button" class="tab active">Google News</button>
+          <button id="mainTabKap" type="button" class="tab">KAP</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <label>Filtreler</label>
         <div class="row">
           <div>
-            <label for="interval">Kontrol suresi (saniye)</label>
+            <label for="interval">Yenileme (sn)</label>
             <input id="interval" type="number" min="30" value="120">
           </div>
           <div>
@@ -53,41 +73,17 @@ $inlineJs = is_file($jsPath) ? (string)file_get_contents($jsPath) : '';
             <input id="country" type="text" value="TR">
           </div>
         </div>
+        <label class="switch-row">
+          <input id="autoRefreshToggle" type="checkbox" checked>
+          <span>Otomatik yenile</span>
+        </label>
+      </div>
 
-        <div class="actions">
-          <button id="startBtn" type="button">Takibi Baslat</button>
-          <button id="stopBtn" type="button" disabled>Duraklat</button>
-          <button id="clearSeenBtn" type="button" class="secondary">Gorulenleri Sifirla</button>
-        </div>
-
-        <p id="status" class="status">Hazir</p>
-      </section>
-
-      <section class="card">
-        <h2>Son Haberler</h2>
-        <div class="tabs">
-          <button id="tabUnread" type="button" class="tab active">Okunmamis</button>
-          <button id="tabRead" type="button" class="tab">Okunan</button>
-          <button id="markAllReadBtn" type="button" class="secondary">Tumunu Okundu Yap</button>
-        </div>
-        <ul id="newsList" class="news-list"></ul>
-      </section>
-
-      <section class="card">
-        <div class="tabs">
-          <h2>Google/DeepSeek Log</h2>
-          <button id="scanAiBacklogBtn" type="button" class="secondary">AI Backlog Tara</button>
-          <button id="clearAiLogsBtn" type="button" class="secondary">Log Temizle</button>
-        </div>
-        <ul id="aiLogsList" class="news-list"></ul>
-      </section>
-    </div>
-
-    <div id="kapPanel" class="hidden">
-      <section class="card">
+      <details class="section details-block">
+        <summary>KAP Ayarlari</summary>
         <label for="kapLinkInput">KAP link ekle</label>
         <div class="kap-add-grid">
-          <input id="kapLinkInput" type="text" placeholder="https://www.kap.org.tr/tr/sirket-bildirimleri/4028e4a1413b7ef5014144f83882011f">
+          <input id="kapLinkInput" type="text" placeholder="https://www.kap.org.tr/tr/sirket-bildirimleri/...">
           <input id="kapMinInput" type="number" min="1" value="2" title="Min dakika">
           <input id="kapMaxInput" type="number" min="1" value="5" title="Max dakika">
           <select id="kapRangeInput">
@@ -98,10 +94,8 @@ $inlineJs = is_file($jsPath) ? (string)file_get_contents($jsPath) : '';
           </select>
           <button id="kapAddJobBtn" type="button">Ekle</button>
         </div>
-        <p class="sub">Her link icin dakika araligi ve tarih filtresi belirleyebilirsiniz.</p>
-        <ul id="kapJobsList" class="news-list"></ul>
+        <ul id="kapJobsList" class="news-list compact"></ul>
         <textarea id="kapLinks" class="hidden" rows="2"></textarea>
-
         <div class="row">
           <div>
             <label for="kapDateRange">Varsayilan tarih filtresi</label>
@@ -115,37 +109,77 @@ $inlineJs = is_file($jsPath) ? (string)file_get_contents($jsPath) : '';
           <div></div>
           <div></div>
         </div>
-
         <div class="actions">
-          <button id="kapStartBtn" type="button">Rastgele Takibi Baslat</button>
-          <button id="kapStopBtn" type="button" disabled>Takibi Durdur</button>
-          <button id="kapFetchBtn" type="button">Apply (Tum Bildirimler)</button>
-          <button id="kapClearBtn" type="button" class="secondary">Listeyi Temizle</button>
+          <button id="kapStartBtn" type="button">Takibi Baslat</button>
+          <button id="kapStopBtn" type="button">Takibi Durdur</button>
+          <button id="kapFetchBtn" type="button" class="secondary">Manuel Cek</button>
+          <button id="kapClearBtn" type="button" class="secondary">Temizle</button>
         </div>
+      </details>
 
-        <p id="kapStatus" class="status">Hazir</p>
+      <div class="actions">
+        <button id="clearSeenBtn" type="button" class="secondary">Okuma Hafizasini Sifirla</button>
+        <button id="installAppBtn" type="button" class="secondary hidden">Uygulamayi Yukle</button>
+      </div>
+      <p id="status" class="status">Hazir</p>
+      <p id="kapStatus" class="status">Hazir</p>
+    </aside>
+
+    <section class="main-content">
+      <div class="card toolbar-card">
+        <div class="toolbar">
+          <input id="feedSearchInput" type="text" placeholder="Haberde ara (baslik, kaynak, keyword)">
+          <div class="toolbar-right">
+            <button id="tabUnread" type="button" class="tab active">Okunmamis</button>
+            <button id="tabRead" type="button" class="tab">Tum Kayitlar</button>
+            <span id="unreadCountBadge" class="pill">Okunmamis: 0</span>
+            <button id="refreshNowBtn" type="button" class="secondary">Yenile</button>
+            <button id="markAllReadBtn" type="button" class="secondary">Tumunu Okundu Yap</button>
+            <button id="kapMarkAllReadBtn" type="button" class="secondary hidden">KAP Tumunu Okundu</button>
+          </div>
+        </div>
+        <p id="nextPollCountdown" class="status-line">Sonraki sorgu: 00:00</p>
+      </div>
+
+      <section class="card summary-card">
+        <h2>Bugunun Piyasa Ozeti</h2>
+        <ul id="dailySummaryList" class="summary-list"></ul>
       </section>
 
-      <section class="card">
-        <h2>KAP Sonuclari</h2>
-        <div class="tabs">
-          <button id="kapTabUnread" type="button" class="tab active">Okunmamis</button>
-          <button id="kapTabRead" type="button" class="tab">Okunan</button>
-          <button id="kapMarkAllReadBtn" type="button" class="secondary">Tumunu Okundu Yap</button>
-        </div>
-        <ul id="kapList" class="news-list"></ul>
-      </section>
+      <div id="newsPanel">
+        <section class="card">
+          <div id="newsList" class="group-list"></div>
+        </section>
 
-      <section class="card">
-        <div class="tabs">
-          <h2>KAP Log</h2>
-          <button id="kapClearLogsBtn" type="button" class="secondary">Log Temizle</button>
-        </div>
-        <ul id="kapLogsList" class="news-list"></ul>
-      </section>
-    </div>
+        <details id="newsLogsCard" class="card details-block">
+          <summary>Google/DeepSeek Log</summary>
+          <div class="tabs">
+            <button id="scanAiBacklogBtn" type="button" class="secondary">AI Backlog Tara</button>
+            <button id="clearAiLogsBtn" type="button" class="secondary">Log Temizle</button>
+          </div>
+          <ul id="aiLogsList" class="news-list"></ul>
+        </details>
+      </div>
+
+      <div id="kapPanel" class="hidden">
+        <section class="card">
+          <div id="kapList" class="group-list"></div>
+        </section>
+
+        <details id="kapLogsCard" class="card details-block">
+          <summary>KAP Log</summary>
+          <div class="tabs">
+            <button id="kapClearLogsBtn" type="button" class="secondary">Log Temizle</button>
+          </div>
+          <ul id="kapLogsList" class="news-list"></ul>
+        </details>
+      </div>
+    </section>
   </main>
 
+  <script>
+    window.__BASE_PATH__ = <?= json_encode($basePath, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+  </script>
   <?php if ($inlineJs !== ''): ?>
   <script><?= $inlineJs ?></script>
   <?php endif; ?>

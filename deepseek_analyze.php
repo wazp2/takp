@@ -48,9 +48,20 @@ function validatePayload(array $obj): array {
         $lvl = 'NOT_IMPORTANT';
     }
     $sendPush = ($lvl === 'VERY_IMPORTANT');
+    $score = isset($obj['importance_score']) ? (int)$obj['importance_score'] : 0;
+    if ($score < 1 || $score > 100) {
+        if ($lvl === 'VERY_IMPORTANT') {
+            $score = 90;
+        } elseif ($lvl === 'IMPORTANT') {
+            $score = 70;
+        } else {
+            $score = 35;
+        }
+    }
 
     return [
         'notification_level' => $lvl,
+        'importance_score' => $score,
         'send_push' => $sendPush,
         'summary' => (string)($obj['summary'] ?? ''),
         'market_impact' => [
@@ -129,8 +140,9 @@ JSON schema:
 
 {
   "notification_level": "VERY_IMPORTANT | IMPORTANT | NOT_IMPORTANT",
+  "importance_score": 1-100,
   "send_push": true | false,
-  "summary": "brief 1–2 sentence explanation",
+  "summary": "brief 1-2 sentence explanation",
   "market_impact": {
       "short_term": "positive | negative | neutral",
       "mid_term": "positive | negative | neutral"
@@ -151,18 +163,22 @@ JSON schema:
 
 Rules:
 
-- VERY_IMPORTANT → send_push must be true
-- IMPORTANT → send_push false
-- NOT_IMPORTANT → send_push false
+- VERY_IMPORTANT -> send_push must be true
+- IMPORTANT -> send_push false
+- NOT_IMPORTANT -> send_push false
+- Score must be integer between 1 and 100
+- VERY_IMPORTANT should generally be >= 80
+- IMPORTANT should generally be between 55 and 79
+- NOT_IMPORTANT should generally be <= 54
 
 Evaluation criteria:
 
-• Revenue / profit / cash flow impact
-• Balance sheet changes
-• Competitive advantage shift
-• Macro sensitivity
-• Does this change company narrative or is routine
-• Retail investor positioning impact
+- Revenue / profit / cash flow impact
+- Balance sheet changes
+- Competitive advantage shift
+- Macro sensitivity
+- Does this change company narrative or is routine
+- Retail investor positioning impact
 
 Be conservative.
 Avoid hype.
